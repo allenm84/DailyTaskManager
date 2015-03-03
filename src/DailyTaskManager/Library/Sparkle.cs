@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Linq;
 using System.Text;
 using DevExpress.XtraGrid.Views.Grid;
@@ -12,12 +13,14 @@ namespace DailyTaskManager
   {
     private const double TotalSeconds = 0.35;
     private const double HalfTotalSeconds = 0.175;
+
     private static Random random = new Random();
+    static float mu() { return (float)random.NextDouble(); }
+
     private DateTime last;
-    private bool moveRight;
     private List<Star> stars;
     private GridView view;
-    private float x;
+    private int rounds = 0;
 
     public Sparkle(int rowHandle, GridView view)
     {
@@ -25,58 +28,90 @@ namespace DailyTaskManager
       this.RowHandle = rowHandle;
       this.last = DateTime.Now;
       this.stars = new List<Star>();
-      this.moveRight = true;
     }
 
     public int RowHandle { get; private set; }
 
     public bool IsFinished
     {
-      get { return !this.moveRight && this.stars.Count == 0; }
+      get { return (rounds >= 3) && this.stars.Count == 0; }
     }
 
-    public void Update(int updates = 1)
+    public void Update()
     {
-      while (updates > 0)
+      var now = DateTime.Now;
+      var timeSpan = now - this.last;
+
+      var gridViewInfo = (GridViewInfo)this.view.GetViewInfo();
+      var rect = gridViewInfo.GetGridRowInfo(this.RowHandle).Bounds;
+
+      if (rounds < 3)
       {
-        var now = DateTime.Now;
-        var timeSpan = now - this.last;
-        if (this.moveRight)
+        for (int i = 0; i < 8; ++i)
         {
-          var gridViewInfo = (GridViewInfo)this.view.GetViewInfo();
-          var bounds = gridViewInfo.GetGridRowInfo(this.RowHandle).Bounds;
-          var num = SmoothStep(2f, 5f, (float)random.NextDouble());
-          var yc = SmoothStep(bounds.Top + num, bounds.Bottom - num, (float)random.NextDouble());
-          var star = new Star(num, this.x, yc);
-          star.SecondsRemaining = 0.35;
-          this.stars.Add(star);
-          this.x += num;
-          this.moveRight = (this.x <= bounds.Right);
+          float r = SmoothStep(1, 3, mu());
+          float x = SmoothStep(rect.Left + r, rect.Right - r, mu());
+          float y = SmoothStep(rect.Top + r, rect.Bottom - r, mu());
+
+          var star = new Star(r, x, y);
+          star.Remaining = random.Next(65, 125);
+          stars.Add(star);
         }
-        for (var i = this.stars.Count - 1; i > -1; i--)
+      }
+
+      for (int i = stars.Count - 1; i > -1; --i)
+      {
+        var star = stars[i];
+        AdjustStar(star, timeSpan);
+        if (star.Remaining <= 0)
         {
-          var star2 = this.stars[i];
-          star2.SecondsRemaining -= timeSpan.TotalSeconds;
-          if (star2.SecondsRemaining <= 0.0)
-          {
-            this.stars.RemoveAt(i);
-          }
+          stars.RemoveAt(i);
+          ++rounds;
         }
-        this.last = now;
-        updates--;
+      }
+
+      this.last = now;
+    }
+
+    private void AdjustStar(Star star, TimeSpan elapsed)
+    {
+      star.Remaining -= elapsed.TotalMilliseconds;
+      star.Total += elapsed.TotalSeconds;
+      star.Angle = (Math.Sin(star.Total) + 1d) / 2d;
+    }
+
+    private void RenderStar(Star star, Graphics graphics)
+    {
+      var bounds = star.Bounds;
+      using (var ellipsePath = new GraphicsPath())
+      {
+        ellipsePath.AddEllipse(bounds);
+        using (var brush = new PathGradientBrush(ellipsePath))
+        {
+          brush.CenterPoint = new PointF(bounds.Width / 2f, bounds.Height / 2f);
+          brush.CenterColor = Color.Gold;
+          brush.SurroundColors = new[] { Color.White };
+          brush.FocusScales = new PointF(0, 0);
+          brush.SetBlendTriangularShape((float)star.Angle);
+
+          var pts = star.Points.ToArray();
+          graphics.FillPolygon(brush, pts);
+          graphics.DrawPolygon(Pens.Yellow, pts);
+        }
       }
     }
 
     public void Render(Graphics gra)
     {
-      foreach (var current in this.stars)
-      {
-        var alpha = (int)(255.0 * (current.SecondsRemaining / 0.35));
-        using (var pen = new Pen(Color.FromArgb(alpha, Color.Purple)))
-        {
-          current.Render(gra, pen);
-        }
-      }
+      var state = gra.Save();
+
+      gra.CompositingQuality = CompositingQuality.HighQuality;
+      gra.InterpolationMode = InterpolationMode.HighQualityBicubic;
+      gra.PixelOffsetMode = PixelOffsetMode.HighQuality;
+      gra.SmoothingMode = SmoothingMode.AntiAlias;
+      stars.ForEach(s => RenderStar(s, gra));
+
+      gra.Restore(state);
     }
 
     private static float Clamp(float value, float min, float max)
@@ -107,7 +142,6 @@ namespace DailyTaskManager
       private static readonly float sin72;
       private static readonly float cos36;
       private static readonly float cos72;
-      private PointF[] points;
 
       static Star()
       {
@@ -117,12 +151,21 @@ namespace DailyTaskManager
         cos72 = (float)Math.Cos(1.2566370614359172);
       }
 
+      private PointF[] points;
+      private RectangleF bounds;
+
+      public double Remaining { get; set; }
+      public double Total { get; set; }
+      public double Angle { get; set; }
+
+      public IEnumerable<PointF> Points { get { return this.points; } }
+      public RectangleF Bounds { get { return this.bounds; } }
+
       public Star(float r, float xc, float yc)
       {
         this.points = Calculate5StarPoints(r, xc, yc);
+        this.bounds = CalculateBounds(points);
       }
-
-      public double SecondsRemaining { get; set; }
 
       public void Render(Graphics graphics, Pen pen)
       {
@@ -145,6 +188,23 @@ namespace DailyTaskManager
           new PointF(xc - r * sin72, yc - r * cos72),
           new PointF(xc - num * sin36, yc - num * cos36)
         };
+      }
+
+      private static RectangleF CalculateBounds(IEnumerable<PointF> points)
+      {
+        float
+          left = float.MaxValue,
+          right = float.MinValue,
+          top = float.MaxValue,
+          bottom = float.MinValue;
+        foreach (var pt in points)
+        {
+          left = Math.Min(pt.X, left);
+          right = Math.Max(pt.X, right);
+          top = Math.Min(pt.Y, top);
+          bottom = Math.Max(pt.Y, bottom);
+        }
+        return RectangleF.FromLTRB(left, top, right, bottom);
       }
     }
 

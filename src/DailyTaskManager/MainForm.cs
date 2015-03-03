@@ -367,7 +367,8 @@ namespace DailyTaskManager
       foreach (var k in keys)
       {
         var s = sparkles[k];
-        s.Update(20);
+        s.Update();
+
         if (s.IsFinished)
         {
           sparkles.Remove(k);
